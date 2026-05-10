@@ -1,6 +1,8 @@
 """
 ShopIQ Customer Service Chatbot
 Flask app backed by a private LLM (Ollama/vLLM) + MySQL
+Supports dual LLM providers: Ollama (Azure VM) and Azure AI Foundry (MaaS)
+Switch via LLM_PROVIDER env var: "ollama" or "foundry"
 """
 
 import os
@@ -8,6 +10,7 @@ import uuid
 import json
 import logging
 from datetime import datetime
+from urllib.parse import quote_plus
 
 import requests
 from flask import Flask, render_template, request, jsonify, session
@@ -26,17 +29,30 @@ app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-me-in-production")
 
 # ── Database ──────────────────────────────────────────────────────────────────
+_db_password = quote_plus(os.getenv("DB_PASSWORD", "shopiq_pass"))
 DB_URL = (
     f"mysql+pymysql://{os.getenv('DB_USER','shopiq_app')}:"
-    f"{os.getenv('DB_PASSWORD','shopiq_pass')}@"
+    f"{_db_password}@"
     f"{os.getenv('DB_HOST','127.0.0.1')}:{os.getenv('DB_PORT','3306')}/"
     f"{os.getenv('DB_NAME','shopiq_db')}"
 )
 engine = create_engine(DB_URL, pool_pre_ping=True, pool_size=5)
 
-# ── LLM endpoint ──────────────────────────────────────────────────────────────
-LLM_URL   = os.getenv("LLM_BASE_URL", "http://localhost:11434/api/chat")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1:8b")
+# ── LLM configuration ─────────────────────────────────────────────────────────
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
+
+# Ollama (Azure VM)
+OLLAMA_URL   = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api/chat")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+
+# Azure AI Foundry (MaaS)
+FOUNDRY_URL   = os.getenv("FOUNDRY_BASE_URL", "")
+FOUNDRY_MODEL = os.getenv("FOUNDRY_MODEL", "Llama-3.3-70B-Instruct")
+FOUNDRY_KEY   = os.getenv("FOUNDRY_API_KEY", "")
+
+log.info("LLM provider: %s | model: %s",
+         LLM_PROVIDER,
+         FOUNDRY_MODEL if LLM_PROVIDER == "foundry" else OLLAMA_MODEL)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Database helpers
@@ -182,26 +198,67 @@ def build_context_message(user_message: str, customer: dict | None) -> str:
 
 
 def call_llm(messages: list[dict]) -> str:
-    """Call Ollama chat API (non-streaming)."""
+    """Route to Ollama or Azure AI Foundry based on LLM_PROVIDER."""
+    if LLM_PROVIDER == "foundry":
+        return _call_foundry(messages)
+    return _call_ollama(messages)
+
+
+def _call_ollama(messages: list[dict]) -> str:
+    """Call Ollama on the Azure VM (non-streaming)."""
     payload = {
-        "model": LLM_MODEL,
+        "model": OLLAMA_MODEL,
         "messages": messages,
         "stream": False
     }
     try:
-        resp = requests.post(LLM_URL, json=payload, timeout=300)
+        resp = requests.post(OLLAMA_URL, json=payload, timeout=300)
         resp.raise_for_status()
-        data = resp.json()
-        return data["message"]["content"]
+        return resp.json()["message"]["content"]
     except requests.exceptions.ConnectionError:
+        log.error("Ollama connection failed — is the VM running?")
         return ("I'm sorry, the AI service is temporarily unavailable. "
-                "Please try again in a moment or contact support@shopiq.com.")
+                "Please start the Azure VM and try again, "
+                "or contact support@shopiq.com.")
     except requests.exceptions.Timeout:
-        log.error("LLM call timed out after 300s")
+        log.error("Ollama timed out after 300s")
         return ("I'm sorry, the AI is taking longer than expected. "
                 "Please try again — the model may still be warming up.")
     except Exception as exc:
-        log.error("LLM call failed: %s", exc)
+        log.error("Ollama call failed: %s", exc)
+        return "I encountered an issue processing your request. Please try again."
+
+
+def _call_foundry(messages: list[dict]) -> str:
+    """Call Azure AI Foundry serverless endpoint (OpenAI-compatible format)."""
+    if not FOUNDRY_URL or not FOUNDRY_KEY:
+        log.error("Foundry URL or API key not configured in .env")
+        return ("Azure AI Foundry is not configured. "
+                "Please set FOUNDRY_BASE_URL and FOUNDRY_API_KEY in .env.")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {FOUNDRY_KEY}"
+    }
+    payload = {
+        "model": FOUNDRY_MODEL,
+        "messages": messages,
+        "max_tokens": 1024,
+        "temperature": 0.7
+    }
+    try:
+        resp = requests.post(FOUNDRY_URL, json=payload,
+                             headers=headers, timeout=60)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+    except requests.exceptions.ConnectionError:
+        log.error("Foundry connection failed")
+        return ("I'm sorry, the AI service is temporarily unavailable. "
+                "Please try again in a moment or contact support@shopiq.com.")
+    except requests.exceptions.Timeout:
+        log.error("Foundry timed out after 60s")
+        return "The AI is taking longer than expected. Please try again."
+    except Exception as exc:
+        log.error("Foundry call failed: %s", exc)
         return "I encountered an issue processing your request. Please try again."
 
 
@@ -274,8 +331,12 @@ def reset():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "model": LLM_MODEL,
-                    "timestamp": datetime.utcnow().isoformat()})
+    return jsonify({
+        "status":    "ok",
+        "provider":  LLM_PROVIDER,
+        "model":     FOUNDRY_MODEL if LLM_PROVIDER == "foundry" else OLLAMA_MODEL,
+        "timestamp": datetime.utcnow().isoformat()
+    })
 
 
 if __name__ == "__main__":
