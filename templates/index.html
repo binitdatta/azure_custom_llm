@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ShopIQ — Customer Service</title>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/chat.css') }}" rel="stylesheet" />
+</head>
+<body class="bg-dark text-light">
+
+<!-- ── Navbar ─────────────────────────────────────────────────────────────── -->
+<nav class="navbar navbar-dark bg-black border-bottom border-secondary px-3">
+  <span class="navbar-brand fw-bold">
+    <i class="bi bi-bag-check-fill text-primary me-2"></i>ShopIQ
+  </span>
+  <span class="badge bg-success" id="status-badge">
+    <i class="bi bi-circle-fill me-1 small"></i>AI Online
+  </span>
+</nav>
+
+<!-- ── Main layout ────────────────────────────────────────────────────────── -->
+<div class="container-fluid" style="max-width:960px; padding-top:1.5rem;">
+  <div class="row g-3">
+
+    <!-- Left: identify panel -->
+    <div class="col-md-3">
+      <div class="card bg-secondary bg-opacity-10 border-secondary">
+        <div class="card-body">
+          <h6 class="card-title text-primary"><i class="bi bi-person-badge me-1"></i>Identify</h6>
+          <p class="small text-muted mb-2">Enter your email to personalise your session.</p>
+          <input type="email" id="email-input" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
+                 placeholder="you@example.com" />
+          <button class="btn btn-sm btn-primary w-100" onclick="identifyCustomer()">
+            <i class="bi bi-search me-1"></i>Look Up
+          </button>
+          <div id="customer-card" class="mt-3 d-none">
+            <div class="alert alert-success p-2 small mb-0">
+              <strong id="cust-name"></strong><br/>
+              Tier: <span id="cust-tier" class="badge bg-warning text-dark"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick prompts -->
+      <div class="card bg-secondary bg-opacity-10 border-secondary mt-3">
+        <div class="card-body">
+          <h6 class="card-title text-primary"><i class="bi bi-lightning-fill me-1"></i>Quick Ask</h6>
+          <div class="d-grid gap-2">
+            <button class="btn btn-sm btn-outline-secondary text-start quick-btn"
+                    data-msg="Where is my latest order?">📦 My latest order</button>
+            <button class="btn btn-sm btn-outline-secondary text-start quick-btn"
+                    data-msg="What laptops do you have in stock?">💻 Laptops in stock</button>
+            <button class="btn btn-sm btn-outline-secondary text-start quick-btn"
+                    data-msg="How do I return a product?">↩️ Return a product</button>
+            <button class="btn btn-sm btn-outline-secondary text-start quick-btn"
+                    data-msg="What is your refund policy?">💳 Refund policy</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Reset -->
+      <button class="btn btn-sm btn-outline-danger w-100 mt-3" onclick="resetSession()">
+        <i class="bi bi-arrow-counterclockwise me-1"></i>New Session
+      </button>
+    </div>
+
+    <!-- Right: chat -->
+    <div class="col-md-9">
+      <div class="card bg-secondary bg-opacity-10 border-secondary d-flex flex-column"
+           style="height:78vh;">
+        <div class="card-header bg-transparent border-secondary d-flex align-items-center">
+          <i class="bi bi-robot text-primary me-2 fs-5"></i>
+          <span class="fw-semibold">ShopIQ Assistant</span>
+          <span class="ms-auto text-muted small">Powered by private LLM — your data stays on-premises</span>
+        </div>
+
+        <!-- Messages -->
+        <div class="card-body overflow-auto flex-grow-1 p-3" id="chat-box">
+          <div class="message assistant-msg">
+            <div class="bubble">
+              👋 Hi! I'm your ShopIQ assistant. I can help with order tracking,
+              product questions, returns, and more.<br/>
+              <span class="text-muted small">Identify yourself on the left for order-specific help.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input row -->
+        <div class="card-footer bg-transparent border-secondary p-2">
+          <div class="input-group">
+            <input type="text" id="user-input"
+                   class="form-control bg-dark text-light border-secondary"
+                   placeholder="Type your question…"
+                   onkeydown="if(event.key==='Enter') sendMessage()" />
+            <button class="btn btn-primary px-4" onclick="sendMessage()" id="send-btn">
+              <i class="bi bi-send-fill"></i>
+            </button>
+          </div>
+          <div class="text-muted small mt-1 ps-1">
+            <i class="bi bi-shield-lock-fill me-1"></i>
+            All queries processed locally — no data sent to public cloud AI.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ── Identify customer ─────────────────────────────────────────────────────
+  async function identifyCustomer() {
+    const email = document.getElementById('email-input').value.trim();
+    if (!email) return;
+    const res  = await fetch('/api/identify', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({email})
+    });
+    const data = await res.json();
+    if (data.found) {
+      document.getElementById('cust-name').textContent = data.name;
+      document.getElementById('cust-tier').textContent = data.tier;
+      document.getElementById('customer-card').classList.remove('d-none');
+      appendMessage('assistant',
+        `Welcome back, ${data.name}! 👋 I can see your account details. How can I help you today?`);
+    } else {
+      appendMessage('assistant',
+        `I couldn't find an account for <strong>${email}</strong>. I can still help with general questions!`);
+    }
+  }
+
+  // ── Send message ──────────────────────────────────────────────────────────
+  async function sendMessage(text) {
+    const input = document.getElementById('user-input');
+    const msg   = text || input.value.trim();
+    if (!msg) return;
+    input.value = '';
+
+    appendMessage('user', msg);
+    setLoading(true);
+
+    const res  = await fetch('/api/chat', {
+      method:  'POST',
+      headers: {'Content-Type':'application/json'},
+      body:    JSON.stringify({message: msg})
+    });
+    const data = await res.json();
+    setLoading(false);
+    appendMessage('assistant', data.reply || data.error || 'Something went wrong.');
+  }
+
+  // ── DOM helpers ───────────────────────────────────────────────────────────
+  function appendMessage(role, html) {
+    const box  = document.getElementById('chat-box');
+    const wrap = document.createElement('div');
+    wrap.className = `message ${role}-msg`;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = html;
+    wrap.appendChild(bubble);
+    box.appendChild(wrap);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function setLoading(on) {
+    const btn = document.getElementById('send-btn');
+    btn.disabled = on;
+    if (on) {
+      appendMessage('assistant', '<span class="typing-dots"><span></span><span></span><span></span></span>');
+    } else {
+      const dots = document.querySelector('.typing-dots');
+      if (dots) dots.closest('.message').remove();
+    }
+  }
+
+  // ── Quick prompts ─────────────────────────────────────────────────────────
+  document.querySelectorAll('.quick-btn').forEach(btn => {
+    btn.addEventListener('click', () => sendMessage(btn.dataset.msg));
+  });
+
+  // ── Reset ─────────────────────────────────────────────────────────────────
+  async function resetSession() {
+    await fetch('/api/reset', {method:'POST'});
+    document.getElementById('chat-box').innerHTML = '';
+    document.getElementById('customer-card').classList.add('d-none');
+    document.getElementById('email-input').value = '';
+    appendMessage('assistant', '🔄 Session reset. How can I help you?');
+  }
+</script>
+</body>
+</html>
