@@ -17,6 +17,9 @@ from flask import Flask, render_template, request, jsonify, session
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 load_dotenv()
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -247,7 +250,8 @@ def _call_foundry(messages: list[dict]) -> str:
     }
     try:
         resp = requests.post(FOUNDRY_URL, json=payload,
-                             headers=headers, timeout=60)
+                             headers=headers, timeout=60,
+                             verify=False)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
     except requests.exceptions.ConnectionError:
